@@ -10,6 +10,8 @@
 // @match        https://www.mangadex.org/*
 // @run-at       document-end
 // @grant        none
+// @updateURL    https://github.com/Ninelpienel/manga_cover/raw/refs/heads/main/mangadex_cover_downloader.user.js
+// @downloadURL  https://github.com/Ninelpienel/manga_cover/raw/refs/heads/main/mangadex_cover_downloader.user.js
 // ==/UserScript==
 
 (function() {
