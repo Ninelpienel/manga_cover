@@ -6,7 +6,7 @@
 // @author       You
 // @match        https://www.manga-passion.de/editions/*
 // @grant        none
-// @downloadURL  https://github.com/HarlemShakespeare/YOUR_REPO_NAME/raw/master/YOUR_USERSCRIPT.user.js
+// @downloadURL  https://github.com/Ninelpienel/manga_cover/raw/master/manga_passion_cover_downloader.user.js
 // ==/UserScript==
 
 (function() {
