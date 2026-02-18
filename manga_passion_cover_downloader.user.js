@@ -498,8 +498,6 @@
         // Verlags-Mappings
         const verlagMappings = {
             'KADOKAWA CORPORATION': 'Kadokawa',
-            'Kadokawa Shoten': 'Kadokawa',
-            'Enterbrain': 'Kadokawa', // Falls Enterbrain auch zu Kadokawa gehört
             // Weitere Mappings hier hinzufügen
         };
         
