@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Manga Passion Cover Downloader
 // @namespace    http://tampermonkey.net/
-// @version      2.2
+// @version      2.3
 // @description  Download high-resolution covers from Manga-Passion.de
 // @author       You
 // @match        https://www.manga-passion.de/editions/*
@@ -493,6 +493,40 @@
         }, 2000);
     }
 
+    // Mapping-Funktion für Werte-Ersetzungen
+    function mapValue(value, field) {
+        // Verlags-Mappings
+        const verlagMappings = {
+            'KADOKAWA CORPORATION': 'Kadokawa',
+            'Kadokawa Shoten': 'Kadokawa',
+            'Enterbrain': 'Kadokawa', // Falls Enterbrain auch zu Kadokawa gehört
+            // Weitere Mappings hier hinzufügen
+        };
+        
+        // Magazine-Mappings (falls nötig)
+        const magazinMappings = {
+            // Beispiel: 'Weekly Shonen Jump': 'WSJ',
+        };
+        
+        // Tag-Mappings (falls nötig)
+        const tagMappings = {
+            // Beispiel: 'Slice of Life': 'SOL',
+        };
+        
+        // Wähle das richtige Mapping basierend auf dem Feld
+        let mappings = {};
+        if (field === 'verlag') {
+            mappings = verlagMappings;
+        } else if (field === 'magazin') {
+            mappings = magazinMappings;
+        } else if (field === 'tag') {
+            mappings = tagMappings;
+        }
+        
+        // Ersetze den Wert wenn ein Mapping existiert
+        return mappings[value] || value;
+    }
+
     // Extrahiere und kopiere alle Infos im Format: typ|herkunft|status|start|romaji|kanji|verlage|magazine|tags
     function copyAllInfo() {
         const info = [];
@@ -615,7 +649,11 @@
         verlagLinks.forEach(link => {
             const verlagName = link.textContent.trim();
             if (verlagName && !verlage.includes(verlagName)) {
-                verlage.push(verlagName);
+                // Wende Mapping an
+                const mappedVerlag = mapValue(verlagName, 'verlag');
+                if (!verlage.includes(mappedVerlag)) {
+                    verlage.push(mappedVerlag);
+                }
             }
         });
         info.push(verlage.join(','));
@@ -627,7 +665,11 @@
         magazinLinks.forEach(link => {
             const magazinName = link.textContent.trim();
             if (magazinName && !magazine.includes(magazinName)) {
-                magazine.push(magazinName);
+                // Wende Mapping an
+                const mappedMagazin = mapValue(magazinName, 'magazin');
+                if (!magazine.includes(mappedMagazin)) {
+                    magazine.push(mappedMagazin);
+                }
             }
         });
         info.push(magazine.join(','));
@@ -640,8 +682,10 @@
         allLinks.forEach(link => {
             const text = link.textContent.trim();
             if (text.length > 30) return;
-            if (!tags.includes(text)) {
-                tags.push(text);
+            // Wende Mapping an
+            const mappedTag = mapValue(text, 'tag');
+            if (!tags.includes(mappedTag)) {
+                tags.push(mappedTag);
             }
         });
         
