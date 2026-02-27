@@ -1,10 +1,10 @@
 // ==UserScript==
 // @name         Manga Passion Cover Downloader
 // @namespace    http://tampermonkey.net/
-// @version      2.6
+// @version      2.7
 // @description  Download high-resolution covers from Manga-Passion.de
 // @author       You
-// @match        https://www.manga-passion.de/editions/*
+// @match        https://www.manga-passion.de/*
 // @grant        none
 // @updateURL    https://github.com/Ninelpienel/manga_cover/raw/refs/heads/main/manga_passion_cover_downloader.user.js
 // @downloadURL  https://github.com/Ninelpienel/manga_cover/raw/refs/heads/main/manga_passion_cover_downloader.user.js
@@ -222,16 +222,6 @@
         console.log('[Manga-Passion Cover Downloader]', message);
         logDiv.innerHTML += `<div>${new Date().toLocaleTimeString()}: ${message}</div>`;
         logDiv.scrollTop = logDiv.scrollHeight;
-    }
-
-    // Zeige oder verstecke UI basierend auf URL
-    function updateUIVisibility() {
-        const isEditionPage = window.location.pathname.match(/\/editions\/\d+/);
-        if (isEditionPage) {
-            ui.style.display = 'block';
-        } else {
-            ui.style.display = 'none';
-        }
     }
 
     function updateProgress(message) {
@@ -1044,14 +1034,12 @@
     if (document.readyState === 'loading') {
         document.addEventListener('DOMContentLoaded', () => {
             setTimeout(() => {
-                updateUIVisibility();
                 initialize();
                 setTimeout(autoAnalyzeIfReady, 1500);
             }, 1000);
         });
     } else {
         setTimeout(() => {
-            updateUIVisibility();
             initialize();
             setTimeout(autoAnalyzeIfReady, 1500);
         }, 1000);
@@ -1064,9 +1052,6 @@
         if (currentUrl !== lastUrl) {
             lastUrl = currentUrl;
             log('URL geändert, re-initialisiere...');
-            
-            // Update UI Visibility
-            updateUIVisibility();
             
             // Reset UI
             allCovers = [];
