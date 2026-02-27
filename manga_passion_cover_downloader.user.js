@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Manga Passion Cover Downloader
 // @namespace    http://tampermonkey.net/
-// @version      2.3
+// @version      2.4
 // @description  Download high-resolution covers from Manga-Passion.de
 // @author       You
 // @match        https://www.manga-passion.de/editions/*
@@ -498,6 +498,8 @@
         // Verlags-Mappings
         const verlagMappings = {
             'KADOKAWA CORPORATION': 'Kadokawa',
+            'Kadokawa Shoten': 'Kadokawa',
+            'Enterbrain': 'Kadokawa', // Falls Enterbrain auch zu Kadokawa gehört
             // Weitere Mappings hier hinzufügen
         };
         
@@ -523,6 +525,18 @@
         
         // Ersetze den Wert wenn ein Mapping existiert
         return mappings[value] || value;
+    }
+
+    // Mapping für Typ basierend auf Herkunft
+    function mapTypByHerkunft(typ, herkunft) {
+        if (typ === 'Manga') {
+            if (herkunft === 'Südkorea' || herkunft === 'Korea') {
+                return 'Manhwa';
+            } else if (herkunft === 'China' || herkunft === 'Taiwan') {
+                return 'Manhua';
+            }
+        }
+        return typ;
     }
 
     // Extrahiere und kopiere alle Infos im Format: typ|herkunft|status|start|romaji|kanji|verlage|magazine|tags
@@ -552,8 +566,6 @@
         if (typ.startsWith('Typ')) {
             typ = typ.replace('Typ', '').trim();
         }
-        info.push(typ);
-        log(`Typ: ${typ || '(leer)'}`);
         
         // 2. HERKUNFT
         let herkunft = getNextLine('Herkunft');
@@ -561,6 +573,13 @@
         if (herkunft.startsWith('Herkunft')) {
             herkunft = herkunft.replace('Herkunft', '').replace('-', '').trim();
         }
+        
+        // Wende Typ-Mapping basierend auf Herkunft an
+        typ = mapTypByHerkunft(typ, herkunft);
+        
+        info.push(typ);
+        log(`Typ: ${typ || '(leer)'}`);
+        
         info.push(herkunft);
         log(`Herkunft: ${herkunft || '(leer)'}`);
         
@@ -994,7 +1013,16 @@
     });
 
     // Initialisierung
-    setTimeout(initialize, 1000);
+    setTimeout(() => {
+        initialize();
+        // Auto-Analyze beim ersten Laden der Seite
+        setTimeout(() => {
+            if (editionId && !isAnalyzing) {
+                log('Auto-Analyze gestartet...');
+                analyzeCovers();
+            }
+        }, 1500);
+    }, 1000);
 
     // Beobachte URL-Änderungen für Single-Page-Application
     let lastUrl = location.href;
@@ -1016,8 +1044,16 @@
             logDiv.innerHTML = '';
             hideProgress();
             
-            // Re-initialisiere
-            setTimeout(initialize, 500);
+            // Re-initialisiere und Auto-Analyze
+            setTimeout(() => {
+                initialize();
+                setTimeout(() => {
+                    if (editionId && !isAnalyzing) {
+                        log('Auto-Analyze nach URL-Wechsel...');
+                        analyzeCovers();
+                    }
+                }, 1500);
+            }, 500);
         }
     }).observe(document, { subtree: true, childList: true });
 
