@@ -4,7 +4,7 @@
 // @version      2.4
 // @description  Download high-resolution covers from Manga-Passion.de
 // @author       You
-// @match        https://www.manga-passion.de/editions/*
+// @match        https://www.manga-passion.de/*
 // @grant        none
 // @updateURL    https://github.com/Ninelpienel/manga_cover/raw/refs/heads/main/manga_passion_cover_downloader.user.js
 // @downloadURL  https://github.com/Ninelpienel/manga_cover/raw/refs/heads/main/manga_passion_cover_downloader.user.js
