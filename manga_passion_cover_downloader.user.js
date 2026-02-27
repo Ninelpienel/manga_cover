@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Manga Passion Cover Downloader
 // @namespace    http://tampermonkey.net/
-// @version      2.7
+// @version      2.8
 // @description  Download high-resolution covers from Manga-Passion.de
 // @author       You
 // @match        https://www.manga-passion.de/*
@@ -1013,36 +1013,13 @@
     });
 
     // Initialisierung
-    function autoAnalyzeIfReady() {
-        if (editionId && !isAnalyzing && document.readyState === 'complete') {
-            // Warte bis Bilder geladen sind
-            const checkImages = setInterval(() => {
-                const volumeLinks = document.querySelectorAll('a[href*="/volumes/"]');
-                if (volumeLinks.length > 0) {
-                    clearInterval(checkImages);
-                    log('Auto-Analyze gestartet...');
-                    analyzeCovers();
-                }
-            }, 500);
-            
-            // Timeout nach 10 Sekunden
-            setTimeout(() => clearInterval(checkImages), 10000);
-        }
-    }
-    
     // Warte auf vollständiges Laden
     if (document.readyState === 'loading') {
         document.addEventListener('DOMContentLoaded', () => {
-            setTimeout(() => {
-                initialize();
-                setTimeout(autoAnalyzeIfReady, 1500);
-            }, 1000);
+            setTimeout(initialize, 1000);
         });
     } else {
-        setTimeout(() => {
-            initialize();
-            setTimeout(autoAnalyzeIfReady, 1500);
-        }, 1000);
+        setTimeout(initialize, 1000);
     }
 
     // Beobachte URL-Änderungen für Single-Page-Application
@@ -1065,11 +1042,8 @@
             logDiv.innerHTML = '';
             hideProgress();
             
-            // Re-initialisiere und Auto-Analyze
-            setTimeout(() => {
-                initialize();
-                setTimeout(autoAnalyzeIfReady, 1500);
-            }, 500);
+            // Re-initialisiere
+            setTimeout(initialize, 500);
         }
     }).observe(document, { subtree: true, childList: true });
 
