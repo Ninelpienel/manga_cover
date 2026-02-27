@@ -4,7 +4,7 @@
 // @version      2.5
 // @description  Download high-resolution covers from Manga-Passion.de
 // @author       You
-// @match        https://www.manga-passion.de/*
+// @match        https://www.manga-passion.de/editions/*
 // @grant        none
 // @updateURL    https://github.com/Ninelpienel/manga_cover/raw/refs/heads/main/manga_passion_cover_downloader.user.js
 // @downloadURL  https://github.com/Ninelpienel/manga_cover/raw/refs/heads/main/manga_passion_cover_downloader.user.js
@@ -1013,16 +1013,37 @@
     });
 
     // Initialisierung
-    setTimeout(() => {
-        initialize();
-        // Auto-Analyze beim ersten Laden der Seite
+    function autoAnalyzeIfReady() {
+        if (editionId && !isAnalyzing && document.readyState === 'complete') {
+            // Warte bis Bilder geladen sind
+            const checkImages = setInterval(() => {
+                const volumeLinks = document.querySelectorAll('a[href*="/volumes/"]');
+                if (volumeLinks.length > 0) {
+                    clearInterval(checkImages);
+                    log('Auto-Analyze gestartet...');
+                    analyzeCovers();
+                }
+            }, 500);
+            
+            // Timeout nach 10 Sekunden
+            setTimeout(() => clearInterval(checkImages), 10000);
+        }
+    }
+    
+    // Warte auf vollständiges Laden
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', () => {
+            setTimeout(() => {
+                initialize();
+                setTimeout(autoAnalyzeIfReady, 1500);
+            }, 1000);
+        });
+    } else {
         setTimeout(() => {
-            if (editionId && !isAnalyzing) {
-                log('Auto-Analyze gestartet...');
-                analyzeCovers();
-            }
-        }, 1500);
-    }, 1000);
+            initialize();
+            setTimeout(autoAnalyzeIfReady, 1500);
+        }, 1000);
+    }
 
     // Beobachte URL-Änderungen für Single-Page-Application
     let lastUrl = location.href;
@@ -1047,12 +1068,7 @@
             // Re-initialisiere und Auto-Analyze
             setTimeout(() => {
                 initialize();
-                setTimeout(() => {
-                    if (editionId && !isAnalyzing) {
-                        log('Auto-Analyze nach URL-Wechsel...');
-                        analyzeCovers();
-                    }
-                }, 1500);
+                setTimeout(autoAnalyzeIfReady, 1500);
             }, 500);
         }
     }).observe(document, { subtree: true, childList: true });
