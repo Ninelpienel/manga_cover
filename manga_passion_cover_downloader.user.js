@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Manga Passion Cover Downloader
 // @namespace    http://tampermonkey.net/
-// @version      2.8
+// @version      3.0
 // @description  Download high-resolution covers from Manga-Passion.de
 // @author       You
 // @match        https://www.manga-passion.de/*
@@ -499,7 +499,6 @@
         const verlagMappings = {
             'KADOKAWA CORPORATION': 'Kadokawa',
             'Kadokawa Shoten': 'Kadokawa',
-            'Enterbrain': 'Kadokawa', // Falls Enterbrain auch zu Kadokawa gehört
             // Weitere Mappings hier hinzufügen
         };
         
