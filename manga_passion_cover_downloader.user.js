@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Manga Passion Cover Downloader
 // @namespace    http://tampermonkey.net/
-// @version      3.0
+// @version      3.1
 // @description  Download high-resolution covers from Manga-Passion.de
 // @author       You
 // @match        https://www.manga-passion.de/*
@@ -164,6 +164,47 @@
             color: #48cae4;
         }
 
+        .range-selector {
+            background: rgba(15, 52, 96, 0.3);
+            padding: 12px;
+            border-radius: 8px;
+            margin: 10px 0;
+            display: none;
+            border-left: 3px solid #00b4d8;
+        }
+
+        .range-selector h4 {
+            margin: 0 0 10px 0;
+            font-size: 13px;
+            color: #48cae4;
+        }
+
+        .range-inputs {
+            display: flex;
+            gap: 10px;
+            align-items: center;
+            margin: 10px 0;
+        }
+
+        .range-inputs input {
+            width: 60px;
+            padding: 6px;
+            border: 1px solid #0f3460;
+            border-radius: 4px;
+            font-size: 13px;
+            background: rgba(0, 0, 0, 0.3);
+            color: #e0e0e0;
+        }
+
+        .range-inputs label {
+            font-size: 12px;
+            color: #e0e0e0;
+        }
+
+        .range-selector small {
+            color: #b8b8d1;
+        }
+
         .show-log {
             display: block !important;
         }
@@ -194,7 +235,18 @@
         <button id="search-mangadex" style="background: linear-gradient(135deg, #ff6740 0%, #ff8360 100%); box-shadow: 0 4px 12px rgba(255, 103, 64, 0.3);">🔍 MangaDex suchen</button>
         <button id="search-mangaupdates" style="background: linear-gradient(135deg, #7c3aed 0%, #9333ea 100%); box-shadow: 0 4px 12px rgba(124, 58, 237, 0.3);">📖 MangaUpdates suchen</button>
         <button id="analyze-covers" class="analyze-button">🔍 Cover analysieren</button>
+        <div class="range-selector" id="range-selector">
+            <h4>Cover-Bereich auswählen:</h4>
+            <div class="range-inputs">
+                <label>Von:</label>
+                <input type="number" id="range-from" min="1" value="1">
+                <label>Bis:</label>
+                <input type="number" id="range-to" min="1" value="1">
+            </div>
+            <small>Leer lassen für alle Cover</small>
+        </div>
         <button id="start-download" disabled style="display: none;">📁 Ordner wählen & herunterladen</button>
+        <button id="copy-links" disabled style="display: none;">📋 Links kopieren</button>
         <button id="toggle-log" style="display: none;">🔍 Details anzeigen</button>
         <div id="mp-progress"></div>
         <div id="mp-log"></div>
@@ -207,7 +259,11 @@
     const searchMangaDexButton = document.getElementById('search-mangadex');
     const searchMangaUpdatesButton = document.getElementById('search-mangaupdates');
     const startButton = document.getElementById('start-download');
+    const copyLinksButton = document.getElementById('copy-links');
     const toggleLogButton = document.getElementById('toggle-log');
+    const rangeSelector = document.getElementById('range-selector');
+    const rangeFromInput = document.getElementById('range-from');
+    const rangeToInput = document.getElementById('range-to');
     const progressDiv = document.getElementById('mp-progress');
     const logDiv = document.getElementById('mp-log');
     const seriesInfoDiv = document.getElementById('series-info');
@@ -839,9 +895,19 @@
             <strong>Cover:</strong> ${allCovers.length} gefunden
         `;
 
+        // Zeige Range-Selector
+        rangeSelector.style.display = 'block';
+        rangeToInput.value = allCovers.length;
+        rangeToInput.max = allCovers.length;
+        rangeFromInput.max = allCovers.length;
+
         startButton.style.display = 'block';
         startButton.disabled = false;
-        startButton.textContent = `📁 ${allCovers.length} Cover herunterladen`;
+        startButton.textContent = `📁 Cover herunterladen`;
+        
+        copyLinksButton.style.display = 'block';
+        copyLinksButton.disabled = false;
+        copyLinksButton.textContent = `📋 ${allCovers.length} Links kopieren`;
 
         analyzeButton.textContent = '🔄 Neu analysieren';
         analyzeButton.disabled = false;
@@ -850,6 +916,56 @@
 
     function sanitizeFilename(filename) {
         return filename.replace(/[<>:"/\\|?*]/g, '_');
+    }
+
+    // Kopiere Cover-Links im Format: Bandnummer|oc||Link
+    async function copyLinksToClipboard() {
+        if (allCovers.length === 0) return;
+
+        // Hole Range-Werte
+        const rangeFrom = parseInt(rangeFromInput.value) || 1;
+        const rangeTo = parseInt(rangeToInput.value) || allCovers.length;
+        
+        // Validiere Range
+        if (rangeFrom < 1 || rangeTo < rangeFrom || rangeTo > allCovers.length) {
+            alert(`Ungültiger Bereich! Bitte wählen Sie zwischen 1 und ${allCovers.length}.`);
+            return;
+        }
+        
+        // Filtere Cover nach Range (Array ist 0-basiert, User-Input ist 1-basiert)
+        const coversToProcess = allCovers.slice(rangeFrom - 1, rangeTo);
+        
+        const lines = [];
+        
+        coversToProcess.forEach(cover => {
+            const volumeNumber = cover.volumeNumber || 'unknown';
+            
+            // Format: Bandnummer|oc||Link
+            const line = `${volumeNumber}|oc||${cover.src}`;
+            lines.push(line);
+        });
+        
+        const textToCopy = lines.join('\n');
+        
+        try {
+            await navigator.clipboard.writeText(textToCopy);
+            log(`✓ ${lines.length} Links kopiert`);
+            updateProgress(`✅ ${lines.length} Links in Zwischenablage kopiert!`);
+            
+            const originalText = copyLinksButton.textContent;
+            copyLinksButton.textContent = '✅ Kopiert!';
+            
+            setTimeout(() => {
+                copyLinksButton.textContent = originalText;
+                hideProgress();
+            }, 2000);
+        } catch (error) {
+            log(`✗ Fehler beim Kopieren: ${error.message}`);
+            updateProgress(`❌ Kopieren fehlgeschlagen`);
+            
+            // Fallback: Zeige Text in Alert
+            alert('Links (kopiere manuell):\n\n' + textToCopy);
+        }
     }
 
     // Download einzelnes Bild
@@ -888,6 +1004,21 @@
             return;
         }
 
+        // Hole Range-Werte
+        const rangeFrom = parseInt(rangeFromInput.value) || 1;
+        const rangeTo = parseInt(rangeToInput.value) || allCovers.length;
+        
+        // Validiere Range
+        if (rangeFrom < 1 || rangeTo < rangeFrom || rangeTo > allCovers.length) {
+            alert(`Ungültiger Bereich! Bitte wählen Sie zwischen 1 und ${allCovers.length}.`);
+            return;
+        }
+
+        // Filtere Cover nach Range (Array ist 0-basiert, User-Input ist 1-basiert)
+        const coversToDownload = allCovers.slice(rangeFrom - 1, rangeTo);
+        
+        log(`Lade Cover ${rangeFrom} bis ${rangeTo} (${coversToDownload.length} Cover)`);
+
         isDownloading = true;
         const originalText = startButton.textContent;
         startButton.disabled = true;
@@ -901,17 +1032,17 @@
             const sanitizedSeriesName = sanitizeFilename(seriesTitle);
             const seriesFolderHandle = await directoryHandle.getDirectoryHandle(sanitizedSeriesName, { create: true });
 
-            log(`Lade ${allCovers.length} Cover in Ordner: ${sanitizedSeriesName}`);
+            log(`Lade ${coversToDownload.length} Cover in Ordner: ${sanitizedSeriesName}`);
 
             let successCount = 0;
 
             // Lade alle Bilder herunter
-            for (let i = 0; i < allCovers.length; i++) {
-                const cover = allCovers[i];
+            for (let i = 0; i < coversToDownload.length; i++) {
+                const cover = coversToDownload[i];
 
                 try {
-                    updateProgress(`📁 Lade ${i + 1}/${allCovers.length}: ${cover.alt}`);
-                    startButton.textContent = `📁 Lade ${i + 1}/${allCovers.length}...`;
+                    updateProgress(`📁 Lade ${i + 1}/${coversToDownload.length}: ${cover.alt}`);
+                    startButton.textContent = `📁 Lade ${i + 1}/${coversToDownload.length}...`;
 
                     const imageBlob = await downloadImage(cover.src);
 
@@ -947,7 +1078,7 @@
                 await new Promise(resolve => setTimeout(resolve, 300));
             }
 
-            updateProgress(`✅ Download abgeschlossen! ${successCount}/${allCovers.length} Cover gespeichert in "${sanitizedSeriesName}"`);
+            updateProgress(`✅ Download abgeschlossen! ${successCount}/${coversToDownload.length} Cover gespeichert in "${sanitizedSeriesName}"`);
             startButton.textContent = '✅ Fertig!';
 
             setTimeout(() => {
@@ -1004,6 +1135,7 @@
     searchMangaUpdatesButton.addEventListener('click', searchOnMangaUpdates);
     analyzeButton.addEventListener('click', analyzeCovers);
     startButton.addEventListener('click', downloadToFolder);
+    copyLinksButton.addEventListener('click', copyLinksToClipboard);
 
     toggleLogButton.addEventListener('click', () => {
         logDiv.classList.toggle('show-log');
