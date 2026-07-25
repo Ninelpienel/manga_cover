@@ -1,28 +1,65 @@
 // ==UserScript==
 // @name         MangaDex Cover Downloader
 // @namespace    http://tampermonkey.net/
-// @version      1.3
+// @version      1.4
 // @description  Download high-resolution covers from MangaDex with automatic version detection
 // @author       You
-// @match        https://mangadex.org/title/*
 // @match        https://mangadex.org/*
-// @match        https://www.mangadex.org/title/*
 // @match        https://www.mangadex.org/*
-// @run-at       document-end
-// @grant        none
+// @connect      api.mangadex.org
+// @connect      uploads.mangadex.org
+// @run-at       document-idle
+// @grant        GM_addStyle
+// @grant        unsafeWindow
 // ==/UserScript==
 
-(function() {
+(function () {
     'use strict';
 
-    // CSS für das UI
-    const style = document.createElement('style');
-    style.textContent = `
+    /* ------------------------------------------------------------------
+     * 0. CSP-sichere Helfer
+     * ------------------------------------------------------------------ */
+
+    // Trusted Types: falls die Seite `require-trusted-types-for 'script'`
+    // setzt, wirft ein direktes `el.innerHTML = str` eine TypeError und
+    // reisst das ganze Skript mit. Policy + DOMParser-Fallback verhindern das.
+    let ttPolicy = null;
+
+    function toHTML(str) {
+        if (typeof trustedTypes !== 'undefined' && trustedTypes.createPolicy) {
+            if (!ttPolicy) {
+                try {
+                    ttPolicy = trustedTypes.createPolicy('mdcd-ui', { createHTML: s => s });
+                } catch (e) {
+                    ttPolicy = null;
+                }
+            }
+            if (ttPolicy) return ttPolicy.createHTML(str);
+        }
+        return str;
+    }
+
+    function setHTML(el, str) {
+        try {
+            el.innerHTML = toHTML(str);
+        } catch (e) {
+            // DOMParser ist kein Trusted-Types-Sink und funktioniert immer
+            const doc = new DOMParser().parseFromString(`<body>${str}</body>`, 'text/html');
+            const nodes = Array.from(doc.body.childNodes).map(n => document.importNode(n, true));
+            el.replaceChildren(...nodes);
+        }
+    }
+
+    /* ------------------------------------------------------------------
+     * 1. CSS
+     * ------------------------------------------------------------------ */
+
+    const CSS = `
         #mangadex-downloader {
             position: fixed;
             bottom: 20px;
             right: 20px;
-            z-index: 10000;
+            z-index: 2147483000;
             background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
             border: 1px solid #0f3460;
             border-radius: 12px;
@@ -32,7 +69,11 @@
             min-width: 320px;
             max-width: 420px;
             backdrop-filter: blur(10px);
+            animation: mdcdFadeIn 0.4s ease-out;
         }
+
+        #mangadex-downloader.mdcd-collapsed > *:not(h3) { display: none !important; }
+        #mangadex-downloader.mdcd-collapsed { min-width: 0; padding: 12px 16px; }
 
         #mangadex-downloader h3 {
             margin: 0 0 15px 0;
@@ -43,7 +84,11 @@
             display: flex;
             align-items: center;
             gap: 8px;
+            cursor: pointer;
+            user-select: none;
         }
+
+        #mangadex-downloader.mdcd-collapsed h3 { margin: 0; }
 
         #mangadex-downloader button {
             background: linear-gradient(135deg, #ff6740 0%, #ff8360 100%);
@@ -66,9 +111,7 @@
             background: linear-gradient(135deg, #ff8360 0%, #ff9980 100%);
         }
 
-        #mangadex-downloader button:active {
-            transform: translateY(0);
-        }
+        #mangadex-downloader button:active { transform: translateY(0); }
 
         #mangadex-downloader button:disabled {
             background: linear-gradient(135deg, #2d2d44 0%, #1f1f2e 100%);
@@ -110,25 +153,14 @@
             display: none;
             border-radius: 8px;
             font-family: 'Courier New', monospace;
+            white-space: pre-wrap;
+            word-break: break-word;
         }
 
-        #mangadex-log::-webkit-scrollbar {
-            width: 8px;
-        }
-
-        #mangadex-log::-webkit-scrollbar-track {
-            background: rgba(0, 0, 0, 0.2);
-            border-radius: 4px;
-        }
-
-        #mangadex-log::-webkit-scrollbar-thumb {
-            background: #0f3460;
-            border-radius: 4px;
-        }
-
-        #mangadex-log::-webkit-scrollbar-thumb:hover {
-            background: #1a4d7a;
-        }
+        #mangadex-log::-webkit-scrollbar { width: 8px; }
+        #mangadex-log::-webkit-scrollbar-track { background: rgba(0,0,0,0.2); border-radius: 4px; }
+        #mangadex-log::-webkit-scrollbar-thumb { background: #0f3460; border-radius: 4px; }
+        #mangadex-log::-webkit-scrollbar-thumb:hover { background: #1a4d7a; }
 
         .mangadex-series-info {
             background: rgba(15, 52, 96, 0.3);
@@ -140,11 +172,9 @@
             border-left: 3px solid #ff6740;
         }
 
-        .mangadex-series-info strong {
-            color: #48cae4;
-        }
+        .mangadex-series-info strong { color: #48cae4; }
 
-        .version-selector {
+        .version-selector, .range-selector {
             background: rgba(15, 52, 96, 0.3);
             padding: 12px;
             border-radius: 8px;
@@ -153,22 +183,7 @@
             border-left: 3px solid #00b4d8;
         }
 
-        .version-selector h4 {
-            margin: 0 0 10px 0;
-            font-size: 13px;
-            color: #48cae4;
-        }
-
-        .range-selector {
-            background: rgba(15, 52, 96, 0.3);
-            padding: 12px;
-            border-radius: 8px;
-            margin: 10px 0;
-            display: none;
-            border-left: 3px solid #00b4d8;
-        }
-
-        .range-selector h4 {
+        .version-selector h4, .range-selector h4 {
             margin: 0 0 10px 0;
             font-size: 13px;
             color: #48cae4;
@@ -191,14 +206,8 @@
             color: #e0e0e0;
         }
 
-        .range-inputs label {
-            font-size: 12px;
-            color: #e0e0e0;
-        }
-
-        .range-selector small {
-            color: #b8b8d1;
-        }
+        .range-inputs label { font-size: 12px; color: #e0e0e0; }
+        .range-selector small { color: #b8b8d1; }
 
         .version-option {
             display: flex;
@@ -217,9 +226,7 @@
             border-color: #00b4d8;
         }
 
-        .version-option input {
-            margin-right: 8px;
-        }
+        .version-option input { margin-right: 8px; }
 
         .version-option label {
             cursor: pointer;
@@ -229,49 +236,50 @@
             font-weight: 500;
         }
 
-        .show-log {
-            display: block !important;
-        }
+        .show-log { display: block !important; }
+        .show-progress { display: block !important; }
+        .show-version-selector { display: block !important; }
+        .show-range-selector { display: block !important; }
 
-        .show-progress {
-            display: block !important;
-        }
-
-        .show-version-selector {
-            display: block !important;
-        }
-
-        .show-range-selector {
-            display: block !important;
-        }
-
-        @keyframes fadeIn {
+        @keyframes mdcdFadeIn {
             from { opacity: 0; transform: translateY(10px); }
-            to { opacity: 1; transform: translateY(0); }
-        }
-
-        #mangadex-downloader {
-            animation: fadeIn 0.4s ease-out;
+            to   { opacity: 1; transform: translateY(0); }
         }
     `;
-    document.head.appendChild(style);
 
-    // UI erstellen
+    let styleEl = null;
+
+    function injectStyle() {
+        if (styleEl && styleEl.isConnected) return;
+        if (typeof GM_addStyle === 'function') {
+            // Sandbox-Injektion: umgeht die CSP der Seite
+            styleEl = GM_addStyle(CSS) || null;
+            if (styleEl) return;
+        }
+        styleEl = document.createElement('style');
+        styleEl.textContent = CSS;
+        (document.head || document.documentElement).appendChild(styleEl);
+    }
+
+    /* ------------------------------------------------------------------
+     * 2. UI aufbauen
+     * ------------------------------------------------------------------ */
+
     const ui = document.createElement('div');
     ui.id = 'mangadex-downloader';
-    ui.innerHTML = `
-        <h3>📚 MangaDex Cover Downloader</h3>
+    setHTML(ui, `
+        <h3 title="Klicken zum Ein-/Ausklappen">📚 MangaDex Cover Downloader</h3>
         <div class="mangadex-series-info" id="series-info">Bereit zum Analysieren...</div>
         <button id="analyze-covers" class="analyze-button">🔍 Cover analysieren</button>
-        <div class="version-selector" id="version-selector">
-            <h4>Mehrere Versionen gefunden:</h4>
-            <div id="version-options"></div>
-            <button id="confirm-version">✓ Version auswählen</button>
-        </div>
         <div class="version-selector" id="locale-selector">
             <h4>Sprache auswählen:</h4>
             <div id="locale-options"></div>
             <button id="confirm-locale">✓ Sprache auswählen</button>
+        </div>
+        <div class="version-selector" id="version-selector">
+            <h4>Mehrere Versionen gefunden:</h4>
+            <div id="version-options"></div>
+            <button id="confirm-version">✓ Version auswählen</button>
         </div>
         <div class="range-selector" id="range-selector">
             <h4>Cover-Bereich auswählen:</h4>
@@ -281,32 +289,52 @@
                 <label>Bis:</label>
                 <input type="number" id="range-to" min="1" value="1">
             </div>
-            <small style="color: #666;">Leer lassen für alle Cover</small>
+            <small>Bereich bezieht sich auf die Position in der Liste, nicht auf die Bandnummer.</small>
         </div>
-        <button id="start-download" disabled style="display: none;">📁 Ordner wählen & herunterladen</button>
+        <button id="start-download" disabled style="display: none;">📁 Ordner wählen &amp; herunterladen</button>
         <button id="copy-links" disabled style="display: none;">📋 Links kopieren</button>
         <button id="toggle-log" style="display: none;">🔍 Details anzeigen</button>
         <div id="mangadex-progress"></div>
         <div id="mangadex-log"></div>
-    `;
-    document.body.appendChild(ui);
+    `);
 
-    const analyzeButton = document.getElementById('analyze-covers');
-    const startButton = document.getElementById('start-download');
-    const copyLinksButton = document.getElementById('copy-links');
-    const toggleLogButton = document.getElementById('toggle-log');
-    const versionSelector = document.getElementById('version-selector');
-    const versionOptions = document.getElementById('version-options');
-    const confirmVersionButton = document.getElementById('confirm-version');
-    const localeSelector = document.getElementById('locale-selector');
-    const localeOptions = document.getElementById('locale-options');
-    const confirmLocaleButton = document.getElementById('confirm-locale');
-    const rangeSelector = document.getElementById('range-selector');
-    const rangeFromInput = document.getElementById('range-from');
-    const rangeToInput = document.getElementById('range-to');
-    const progressDiv = document.getElementById('mangadex-progress');
-    const logDiv = document.getElementById('mangadex-log');
-    const seriesInfoDiv = document.getElementById('series-info');
+    // Referenzen aus dem (noch nicht eingehängten) UI-Baum holen.
+    const $ = id => ui.querySelector('#' + id);
+
+    const headerEl = ui.querySelector('h3');
+    const analyzeButton = $('analyze-covers');
+    const startButton = $('start-download');
+    const copyLinksButton = $('copy-links');
+    const toggleLogButton = $('toggle-log');
+    const versionSelector = $('version-selector');
+    const versionOptions = $('version-options');
+    const confirmVersionButton = $('confirm-version');
+    const localeSelector = $('locale-selector');
+    const localeOptions = $('locale-options');
+    const confirmLocaleButton = $('confirm-locale');
+    const rangeSelector = $('range-selector');
+    const rangeFromInput = $('range-from');
+    const rangeToInput = $('range-to');
+    const progressDiv = $('mangadex-progress');
+    const logDiv = $('mangadex-log');
+    const seriesInfoDiv = $('series-info');
+
+    /* ------------------------------------------------------------------
+     * 3. Selbstheilendes Mounten
+     * ------------------------------------------------------------------ */
+
+    function mount() {
+        injectStyle();
+        if (!ui.isConnected) {
+            (document.body || document.documentElement).appendChild(ui);
+            return true;
+        }
+        return false;
+    }
+
+    /* ------------------------------------------------------------------
+     * 4. State
+     * ------------------------------------------------------------------ */
 
     let isAnalyzing = false;
     let isDownloading = false;
@@ -317,14 +345,40 @@
     let selectedVersion = null;
     let selectedLocale = null;
 
+    const LOCALE_NAMES = {
+        'ja': '🇯🇵 Japanisch',
+        'en': '🇬🇧 Englisch',
+        'de': '🇩🇪 Deutsch',
+        'fr': '🇫🇷 Französisch',
+        'es': '🇪🇸 Spanisch',
+        'es-la': '🇲🇽 Spanisch (LATAM)',
+        'it': '🇮🇹 Italienisch',
+        'pt-br': '🇧🇷 Portugiesisch (BR)',
+        'zh': '🇨🇳 Chinesisch',
+        'zh-hk': '🇭🇰 Chinesisch (HK)',
+        'ko': '🇰🇷 Koreanisch',
+        'ru': '🇷🇺 Russisch',
+        'none': '🌐 Keine Angabe'
+    };
+
+    function localeLabel(code) {
+        return LOCALE_NAMES[code] || `🌍 ${code}`;
+    }
+
+    /* ------------------------------------------------------------------
+     * 5. Logging / Progress (ohne innerHTML)
+     * ------------------------------------------------------------------ */
+
     function log(message) {
         console.log('[MangaDex Cover Downloader]', message);
-        logDiv.innerHTML += `<div>${new Date().toLocaleTimeString()}: ${message}</div>`;
+        const line = document.createElement('div');
+        line.textContent = `${new Date().toLocaleTimeString()}: ${message}`;
+        logDiv.appendChild(line);
         logDiv.scrollTop = logDiv.scrollHeight;
     }
 
     function updateProgress(message) {
-        progressDiv.innerHTML = message;
+        progressDiv.textContent = message;
         progressDiv.classList.add('show-progress');
     }
 
@@ -332,23 +386,34 @@
         progressDiv.classList.remove('show-progress');
     }
 
-    // Extrahiere Manga-ID aus URL
+    function setSeriesInfo(lines) {
+        progressDiv.dataset.dummy = '';
+        seriesInfoDiv.replaceChildren();
+        lines.forEach((parts, i) => {
+            if (i > 0) seriesInfoDiv.appendChild(document.createElement('br'));
+            const strong = document.createElement('strong');
+            strong.textContent = parts[0];
+            seriesInfoDiv.appendChild(strong);
+            seriesInfoDiv.appendChild(document.createTextNode(' ' + parts[1]));
+        });
+    }
+
+    /* ------------------------------------------------------------------
+     * 6. MangaDex API
+     * ------------------------------------------------------------------ */
+
     function getMangaId() {
-        const match = window.location.pathname.match(/\/title\/([a-f0-9-]+)/);
+        const match = location.pathname.match(/\/title\/([0-9a-f]{8}-[0-9a-f-]+)/i);
         return match ? match[1] : null;
     }
 
-    // Hole Manga-Informationen via API
     async function getMangaInfo() {
         try {
-            const response = await fetch(`https://api.mangadex.org/manga/${mangaId}?includes[]=cover_art`);
+            const response = await fetch(`https://api.mangadex.org/manga/${mangaId}`);
             const data = await response.json();
-            
             if (data.result === 'ok') {
-                const title = data.data.attributes.title.en || 
-                             data.data.attributes.title['ja-ro'] || 
-                             Object.values(data.data.attributes.title)[0] || 
-                             'Unknown';
+                const t = data.data.attributes.title;
+                const title = t.en || t['ja-ro'] || Object.values(t)[0] || 'Unknown';
                 return { title };
             }
         } catch (error) {
@@ -357,244 +422,189 @@
         return null;
     }
 
-    // Hole alle Cover für diesen Manga
     async function getAllCovers() {
+        const covers = [];
         try {
             let offset = 0;
             const limit = 100;
-            const covers = [];
 
             while (true) {
                 const response = await fetch(
                     `https://api.mangadex.org/cover?manga[]=${mangaId}&limit=${limit}&offset=${offset}&order[volume]=asc`
                 );
+
+                if (response.status === 429) {
+                    log('⏳ Rate-Limit erreicht, warte 5 Sekunden...');
+                    await new Promise(r => setTimeout(r, 5000));
+                    continue;
+                }
+
                 const data = await response.json();
+                if (data.result !== 'ok') break;
 
-                if (data.result === 'ok') {
-                    log(`API lieferte ${data.data.length} Cover (offset ${offset})`);
-                    
-                    // Filtere nur Cover MIT Volume-Nummer, aber ALLE Sprachen
-                    const validCovers = data.data.filter(cover => {
-                        const locale = cover.attributes.locale;
-                        const volume = cover.attributes.volume;
-                        
-                        // Log jedes Cover zur Analyse
-                        log(`Cover gefunden - Volume: ${volume}, Locale: ${locale || 'none'}`);
-                        
-                        // Überspringe Cover ohne Volume-Nummer
-                        if (!volume || volume === null || volume === 'null') {
-                            log(`  → Überspringe: Keine Volume-Nummer`);
-                            return false;
-                        }
-                        
-                        return true;
-                    });
-                    
-                    log(`Nach Filter: ${validCovers.length} Cover mit Volume-Nummer`);
-                    covers.push(...validCovers);
-                    
-                    if (data.data.length < limit) {
-                        break; // Keine weiteren Seiten
-                    }
-                    offset += limit;
-                } else {
-                    break;
-                }
+                log(`API lieferte ${data.data.length} Cover (offset ${offset})`);
 
-                await new Promise(resolve => setTimeout(resolve, 250));
+                const withVolume = data.data.filter(cover => {
+                    const volume = cover.attributes.volume;
+                    if (!volume || volume === 'null') return false;
+                    return true;
+                });
+
+                log(`Davon ${withVolume.length} mit Bandnummer`);
+                covers.push(...withVolume);
+
+                if (data.data.length < limit) break;
+                offset += limit;
+                await new Promise(r => setTimeout(r, 250));
             }
-
-            // Gruppiere Cover nach Volume und Locale für Sprach-Auswahl
-            const volumeLocaleMap = new Map();
-            covers.forEach(cover => {
-                const vol = cover.attributes.volume;
-                const locale = cover.attributes.locale || 'none';
-                const key = `${vol}_${locale}`;
-                
-                if (!volumeLocaleMap.has(key)) {
-                    volumeLocaleMap.set(key, cover);
-                }
-            });
-            
-            const uniqueCovers = Array.from(volumeLocaleMap.values());
-            log(`Nach Duplikat-Entfernung: ${uniqueCovers.length} einzigartige Cover`);
-
-            return uniqueCovers;
         } catch (error) {
             log(`✗ Fehler beim Laden der Cover: ${error.message}`);
             return [];
         }
+
+        // Duplikate pro Band+Sprache entfernen
+        const map = new Map();
+        covers.forEach(cover => {
+            const key = `${cover.attributes.volume}_${cover.attributes.locale || 'none'}`;
+            if (!map.has(key)) map.set(key, cover);
+        });
+
+        const unique = Array.from(map.values());
+        log(`Nach Duplikat-Entfernung: ${unique.length} einzigartige Cover`);
+        return unique;
     }
 
-    // Parse Bandnummer (unterstützt 1, 1.1, 1.2, etc.)
+    /* ------------------------------------------------------------------
+     * 7. Versions-/Sprachlogik
+     * ------------------------------------------------------------------ */
+
     function parseVolume(volumeStr) {
         if (!volumeStr || volumeStr === 'null' || volumeStr === 'undefined') {
             return { main: 0, sub: 0 };
         }
-        
-        // Konvertiere zu String falls nötig
         const volString = String(volumeStr).trim();
-        if (!volString) {
-            return { main: 0, sub: 0 };
-        }
-        
+        if (!volString) return { main: 0, sub: 0 };
+
         const parts = volString.split('.');
-        const main = parseInt(parts[0]) || 0;
-        const sub = parts.length > 1 ? parseInt(parts[1]) || 0 : 0;
-        
+        const main = parseInt(parts[0], 10) || 0;
+        const sub = parts.length > 1 ? (parseInt(parts[1], 10) || 0) : 0;
         return { main, sub };
     }
 
-    // Erkenne verfügbare Versionen (X, X.1, X.2, etc.) UND Sprachen
-    function detectVersionsAndLocales(covers) {
-        const versions = new Set();
-        const locales = new Set();
-        const volumeMap = new Map(); // main volume -> Set of sub versions
+    // Versionen werden pro Sprache ermittelt – sonst zeigt der Dialog
+    // Versionen an, die es in der gewählten Sprache gar nicht gibt.
+    function detectVersions(covers, locale) {
+        const pool = locale
+            ? covers.filter(c => (c.attributes.locale || 'none') === locale)
+            : covers;
 
-        covers.forEach(cover => {
+        const versions = new Set();
+        const volumeMap = new Map();
+
+        pool.forEach(cover => {
             const vol = parseVolume(cover.attributes.volume);
-            const locale = cover.attributes.locale || 'none';
-            
-            // Sammle Locales
-            locales.add(locale);
-            
-            if (!volumeMap.has(vol.main)) {
-                volumeMap.set(vol.main, new Set());
-            }
+            if (!volumeMap.has(vol.main)) volumeMap.set(vol.main, new Set());
             volumeMap.get(vol.main).add(vol.sub);
+            versions.add(vol.sub);
         });
 
-        // Prüfe ob es mehrere Versionen gibt
         let hasMultipleVersions = false;
-        volumeMap.forEach((subs, main) => {
-            if (subs.size > 1) {
-                hasMultipleVersions = true;
-            }
-            subs.forEach(sub => {
-                versions.add(sub);
-            });
+        volumeMap.forEach(subs => {
+            if (subs.size > 1) hasMultipleVersions = true;
         });
 
         return {
             hasMultipleVersions,
-            hasMultipleLocales: locales.size > 1,
-            versions: Array.from(versions).sort((a, b) => a - b),
-            locales: Array.from(locales).sort(),
-            volumeMap
+            versions: Array.from(versions).sort((a, b) => a - b)
         };
     }
 
-    // Filtere Cover nach ausgewählter Version und Locale
-    function filterCoversByVersionAndLocale(covers, version, locale) {
-        return covers.filter(cover => {
-            const vol = parseVolume(cover.attributes.volume);
-            const coverLocale = cover.attributes.locale || 'none';
-            return vol.sub === version && coverLocale === locale;
-        }).sort((a, b) => {
-            const volA = parseVolume(a.attributes.volume);
-            const volB = parseVolume(b.attributes.volume);
-            return volA.main - volB.main;
-        });
+    function detectLocales(covers) {
+        const locales = new Set();
+        covers.forEach(c => locales.add(c.attributes.locale || 'none'));
+        return Array.from(locales).sort();
     }
 
-    // Zeige Locale-Auswahl
+    function filterCovers(covers, version, locale) {
+        return covers
+            .filter(cover => {
+                const vol = parseVolume(cover.attributes.volume);
+                const coverLocale = cover.attributes.locale || 'none';
+                return vol.sub === version && coverLocale === locale;
+            })
+            .sort((a, b) => parseVolume(a.attributes.volume).main - parseVolume(b.attributes.volume).main);
+    }
+
+    function buildOption(groupName, value, id, text) {
+        const optionDiv = document.createElement('div');
+        optionDiv.className = 'version-option';
+
+        const radioInput = document.createElement('input');
+        radioInput.type = 'radio';
+        radioInput.name = groupName;
+        radioInput.value = value;
+        radioInput.id = id;
+
+        const labelElement = document.createElement('label');
+        labelElement.htmlFor = id;
+        labelElement.textContent = text;
+
+        optionDiv.appendChild(radioInput);
+        optionDiv.appendChild(labelElement);
+        optionDiv.addEventListener('click', () => { radioInput.checked = true; });
+
+        return { optionDiv, radioInput };
+    }
+
     function showLocaleSelector(locales) {
-        localeOptions.innerHTML = '';
-        
-        // Übersetze Locale-Codes zu lesbaren Namen
-        const localeNames = {
-            'ja': '🇯🇵 Japanisch',
-            'en': '🇬🇧 Englisch',
-            'de': '🇩🇪 Deutsch',
-            'fr': '🇫🇷 Französisch',
-            'es': '🇪🇸 Spanisch',
-            'es-la': '🇲🇽 Spanisch (LATAM)',
-            'it': '🇮🇹 Italienisch',
-            'pt-br': '🇧🇷 Portugiesisch (BR)',
-            'zh': '🇨🇳 Chinesisch',
-            'ko': '🇰🇷 Koreanisch',
-            'none': '🌐 Keine Angabe'
-        };
-        
+        localeOptions.replaceChildren();
+
         locales.forEach(locale => {
             const count = allCovers.filter(c => (c.attributes.locale || 'none') === locale).length;
-            const label = localeNames[locale] || `🌍 ${locale}`;
-            
-            const optionDiv = document.createElement('div');
-            optionDiv.className = 'version-option';
-            
-            const radioInput = document.createElement('input');
-            radioInput.type = 'radio';
-            radioInput.name = 'locale';
-            radioInput.value = locale;
-            radioInput.id = `locale-${locale}`;
-            
-            const labelElement = document.createElement('label');
-            labelElement.htmlFor = `locale-${locale}`;
-            labelElement.textContent = `${label} (${count} Cover)`;
-            labelElement.style.color = '#e0e0e0';
-            labelElement.style.fontSize = '13px';
-            
-            optionDiv.appendChild(radioInput);
-            optionDiv.appendChild(labelElement);
-            
-            optionDiv.addEventListener('click', () => {
-                radioInput.checked = true;
-            });
-            
+            const { optionDiv } = buildOption(
+                'locale', locale, `mdcd-locale-${locale}`,
+                `${localeLabel(locale)} (${count} Cover)`
+            );
             localeOptions.appendChild(optionDiv);
         });
 
-        // Wähle erste Option (oder 'ja' falls vorhanden) als Standard
         const defaultLocale = locales.includes('ja') ? 'ja' : locales[0];
-        const defaultInput = document.getElementById(`locale-${defaultLocale}`);
-        if (defaultInput) {
-            defaultInput.checked = true;
-        }
+        const defaultInput = localeOptions.querySelector(`#mdcd-locale-${CSS_escape(defaultLocale)}`);
+        if (defaultInput) defaultInput.checked = true;
 
         localeSelector.classList.add('show-version-selector');
     }
 
-    // Zeige Versions-Auswahl
+    // CSS.escape ist nicht überall verfügbar bzw. im Sandbox-Scope verschattet
+    function CSS_escape(str) {
+        return String(str).replace(/[^a-zA-Z0-9_-]/g, '\\$&');
+    }
+
     function showVersionSelector(versionInfo) {
-        versionOptions.innerHTML = '';
-        
+        versionOptions.replaceChildren();
+
         versionInfo.versions.forEach(version => {
-            const count = allCovers.filter(c => parseVolume(c.attributes.volume).sub === version).length;
+            const count = allCovers.filter(c =>
+                parseVolume(c.attributes.volume).sub === version &&
+                (c.attributes.locale || 'none') === selectedLocale
+            ).length;
             const label = version === 0 ? 'Standard (X)' : `Version X.${version}`;
-            
-            const optionDiv = document.createElement('div');
-            optionDiv.className = 'version-option';
-            
-            const radioInput = document.createElement('input');
-            radioInput.type = 'radio';
-            radioInput.name = 'version';
-            radioInput.value = version;
-            radioInput.id = `version-${version}`;
-            
-            const labelElement = document.createElement('label');
-            labelElement.htmlFor = `version-${version}`;
-            labelElement.textContent = `${label} (${count} Cover)`;
-            labelElement.style.color = '#333';
-            labelElement.style.fontSize = '13px';
-            
-            optionDiv.appendChild(radioInput);
-            optionDiv.appendChild(labelElement);
-            
-            optionDiv.addEventListener('click', () => {
-                radioInput.checked = true;
-            });
-            
+            const { optionDiv } = buildOption(
+                'version', version, `mdcd-version-${version}`,
+                `${label} (${count} Cover)`
+            );
             versionOptions.appendChild(optionDiv);
         });
 
-        // Wähle erste Option als Standard
-        if (versionInfo.versions.length > 0) {
-            document.getElementById(`version-${versionInfo.versions[0]}`).checked = true;
-        }
+        const first = versionOptions.querySelector('input[name="version"]');
+        if (first) first.checked = true;
 
         versionSelector.classList.add('show-version-selector');
     }
+
+    /* ------------------------------------------------------------------
+     * 8. Ablauf
+     * ------------------------------------------------------------------ */
 
     async function analyzeCovers() {
         if (isAnalyzing) return;
@@ -603,93 +613,98 @@
         allCovers = [];
         selectedCovers = [];
 
-        // UI anpassen
         analyzeButton.disabled = true;
         analyzeButton.textContent = '🔍 Analysiere...';
         toggleLogButton.style.display = 'block';
-        logDiv.innerHTML = '';
+        logDiv.replaceChildren();
 
-        updateProgress('📡 Lade Manga-Informationen...');
+        try {
+            updateProgress('📡 Lade Manga-Informationen...');
+            const mangaInfo = await getMangaInfo();
+            if (mangaInfo) {
+                seriesTitle = mangaInfo.title;
+                log(`Serie gefunden: ${seriesTitle}`);
+            }
 
-        // Hole Manga-Info
-        const mangaInfo = await getMangaInfo();
-        if (mangaInfo) {
-            seriesTitle = mangaInfo.title;
-            log(`Serie gefunden: ${seriesTitle}`);
-        }
+            updateProgress('🖼️ Lade Cover-Liste...');
+            allCovers = await getAllCovers();
 
-        updateProgress('🖼️ Lade Cover-Liste...');
+            if (allCovers.length === 0) {
+                updateProgress('❌ Keine Cover gefunden');
+                resetAnalyzeButton();
+                return;
+            }
 
-        // Hole alle Cover
-        allCovers = await getAllCovers();
-        
-        if (allCovers.length === 0) {
-            updateProgress('❌ Keine Cover gefunden');
-            analyzeButton.disabled = false;
-            analyzeButton.textContent = '🔍 Cover analysieren';
+            log(`${allCovers.length} Cover gesamt`);
+
+            const locales = detectLocales(allCovers);
+            log(`Sprachen erkannt: ${locales.join(', ')}`);
+
+            if (locales.length > 1) {
+                updateProgress('⚠️ Mehrere Sprachen gefunden – bitte auswählen');
+                showLocaleSelector(locales);
+                analyzeButton.style.display = 'none';
+                return;
+            }
+
+            selectedLocale = locales[0];
+            continueAfterLocale();
+        } catch (error) {
+            log(`✗ Unerwarteter Fehler: ${error.message}`);
+            updateProgress('❌ Fehler bei der Analyse');
+            resetAnalyzeButton();
+        } finally {
             isAnalyzing = false;
+        }
+    }
+
+    function resetAnalyzeButton() {
+        analyzeButton.disabled = false;
+        analyzeButton.style.display = 'block';
+        analyzeButton.textContent = '🔍 Cover analysieren';
+    }
+
+    function continueAfterLocale() {
+        const versionInfo = detectVersions(allCovers, selectedLocale);
+        log(`Versionen in "${selectedLocale}": ${versionInfo.versions.join(', ')}`);
+
+        localeSelector.classList.remove('show-version-selector');
+
+        if (versionInfo.hasMultipleVersions) {
+            updateProgress('⚠️ Mehrere Versionen gefunden – bitte auswählen');
+            showVersionSelector(versionInfo);
+            analyzeButton.style.display = 'none';
             return;
         }
 
-        log(`${allCovers.length} Cover gefunden`);
-
-        // Erkenne Versionen UND Sprachen
-        const versionInfo = detectVersionsAndLocales(allCovers);
-        log(`Versionen erkannt: ${versionInfo.versions.join(', ')}`);
-        log(`Sprachen erkannt: ${versionInfo.locales.join(', ')}`);
-
-        // Zeige zuerst Locale-Auswahl wenn mehrere Sprachen vorhanden
-        if (versionInfo.hasMultipleLocales) {
-            updateProgress(`⚠️ Mehrere Sprachen gefunden - Bitte auswählen`);
-            showLocaleSelector(versionInfo.locales);
-            analyzeButton.style.display = 'none';
-        } else if (versionInfo.hasMultipleVersions) {
-            // Nur eine Sprache, aber mehrere Versionen
-            selectedLocale = versionInfo.locales[0];
-            updateProgress(`⚠️ Mehrere Versionen gefunden - Bitte auswählen`);
-            showVersionSelector(versionInfo);
-            analyzeButton.style.display = 'none';
-        } else {
-            // Nur eine Version und eine Sprache, direkt fortfahren
-            selectedVersion = versionInfo.versions[0];
-            selectedLocale = versionInfo.locales[0];
-            selectedCovers = filterCoversByVersionAndLocale(allCovers, selectedVersion, selectedLocale);
-            proceedToDownload();
-        }
-
-        isAnalyzing = false;
+        selectedVersion = versionInfo.versions[0] || 0;
+        selectedCovers = filterCovers(allCovers, selectedVersion, selectedLocale);
+        proceedToDownload();
     }
 
     function proceedToDownload() {
-        // Zeige Range-Selector
-        rangeSelector.classList.add('show-version-selector');
+        versionSelector.classList.remove('show-version-selector');
+        localeSelector.classList.remove('show-version-selector');
+        analyzeButton.style.display = 'none';
+
+        rangeSelector.classList.add('show-range-selector');
         rangeToInput.value = selectedCovers.length;
         rangeToInput.max = selectedCovers.length;
         rangeFromInput.max = selectedCovers.length;
-        
-        updateProgress(`✅ ${selectedCovers.length} Cover gefunden`);
-        
-        const localeNames = {
-            'ja': 'Japanisch',
-            'en': 'Englisch',
-            'de': 'Deutsch',
-            'fr': 'Französisch',
-            'es': 'Spanisch',
-            'none': 'Keine Angabe'
-        };
-        const localeName = localeNames[selectedLocale] || selectedLocale;
-        
-        seriesInfoDiv.innerHTML = `
-            <strong>Serie:</strong> ${seriesTitle}<br>
-            <strong>Cover:</strong> ${selectedCovers.length} ${localeName} ${selectedVersion > 0 ? `(Version X.${selectedVersion})` : '(Standard)'}
-        `;
+        rangeFromInput.value = 1;
 
-        versionSelector.classList.remove('show-version-selector');
-        localeSelector.classList.remove('show-version-selector');
+        updateProgress(`✅ ${selectedCovers.length} Cover gefunden`);
+
+        const versionText = selectedVersion > 0 ? `(Version X.${selectedVersion})` : '(Standard)';
+        setSeriesInfo([
+            ['Serie:', seriesTitle || '–'],
+            ['Cover:', `${selectedCovers.length} · ${localeLabel(selectedLocale)} ${versionText}`]
+        ]);
+
         startButton.style.display = 'block';
         startButton.disabled = false;
-        startButton.textContent = `📁 Cover herunterladen`;
-        
+        startButton.textContent = '📁 Cover herunterladen';
+
         copyLinksButton.style.display = 'block';
         copyLinksButton.disabled = false;
         copyLinksButton.textContent = `📋 ${selectedCovers.length} Links kopieren`;
@@ -697,153 +712,96 @@
         log(`Bereit zum Download: ${selectedCovers.length} Cover`);
     }
 
-    confirmLocaleButton.addEventListener('click', () => {
-        const selected = document.querySelector('input[name="locale"]:checked');
-        if (selected) {
-            selectedLocale = selected.value;
-            log(`Sprache ausgewählt: ${selectedLocale}`);
-            
-            // Prüfe nun ob es mehrere Versionen gibt
-            const versionInfo = detectVersionsAndLocales(allCovers);
-            
-            localeSelector.classList.remove('show-version-selector');
-            
-            if (versionInfo.hasMultipleVersions) {
-                updateProgress(`⚠️ Mehrere Versionen gefunden - Bitte auswählen`);
-                showVersionSelector(versionInfo);
-            } else {
-                selectedVersion = versionInfo.versions[0];
-                selectedCovers = filterCoversByVersionAndLocale(allCovers, selectedVersion, selectedLocale);
-                proceedToDownload();
-            }
-        }
-    });
+    /* ------------------------------------------------------------------
+     * 9. Download / Clipboard
+     * ------------------------------------------------------------------ */
 
-    confirmVersionButton.addEventListener('click', () => {
-        const selected = document.querySelector('input[name="version"]:checked');
-        if (selected) {
-            selectedVersion = parseInt(selected.value);
-            selectedCovers = filterCoversByVersionAndLocale(allCovers, selectedVersion, selectedLocale);
-            proceedToDownload();
-        }
-    });
-
-    // Generiere Cover-URL
-    function getCoverUrl(mangaId, filename, quality = 'original') {
-        return `https://uploads.mangadex.org/covers/${mangaId}/${filename}`;
+    function getCoverUrl(id, filename) {
+        return `https://uploads.mangadex.org/covers/${id}/${filename}`;
     }
 
     function sanitizeFilename(filename) {
-        // Entferne Windows-inkompatible Zeichen: < > : " / \ | ? *
-        // Sowie problematische Zeichen: ~ und Steuerzeichen
-        let sanitized = filename
-            .replace(/[<>:"/\\|?*~]/g, '_')  // Ersetze verbotene Zeichen
-            .replace(/[\x00-\x1F\x7F]/g, '') // Entferne Steuerzeichen
-            .replace(/^\.+/, '')              // Entferne führende Punkte
-            .trim()                           // Entferne Leerzeichen an Anfang/Ende
-            .replace(/[.\s]+$/, '');          // Entferne Punkte/Leerzeichen am Ende
-        
-        // Wenn der Name leer ist oder zu lang, verwende einen Standard
-        if (!sanitized || sanitized.length === 0) {
-            sanitized = 'Manga';
-        }
-        
-        // Windows hat ein Limit von 255 Zeichen für Ordnernamen
-        if (sanitized.length > 200) {
-            sanitized = sanitized.substring(0, 200);
-        }
-        
+        let sanitized = String(filename || '')
+            .replace(/[<>:"/\\|?*~]/g, '_')
+            .replace(/[\x00-\x1F\x7F]/g, '')
+            .replace(/^\.+/, '')
+            .trim()
+            .replace(/[.\s]+$/, '');
+
+        if (!sanitized) sanitized = 'Manga';
+        if (sanitized.length > 200) sanitized = sanitized.substring(0, 200);
         return sanitized;
     }
 
-    // Download Cover
-    async function downloadCover(coverUrl) {
-        try {
-            const response = await fetch(coverUrl);
-            if (!response.ok) {
-                throw new Error(`HTTP ${response.status}`);
-            }
-            return await response.blob();
-        } catch (error) {
-            log(`✗ Fehler beim Download: ${error.message}`);
-            throw error;
-        }
+    function getRange() {
+        const from = parseInt(rangeFromInput.value, 10) || 1;
+        const to = parseInt(rangeToInput.value, 10) || selectedCovers.length;
+        return { from, to };
     }
 
-    // Kopiere Cover-Links im Format: Bandnummer|oc||Link
+    async function downloadCover(coverUrl) {
+        const response = await fetch(coverUrl);
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        return await response.blob();
+    }
+
     async function copyLinksToClipboard() {
         if (selectedCovers.length === 0) return;
 
-        // Hole Range-Werte
-        const rangeFrom = parseInt(rangeFromInput.value) || 1;
-        const rangeTo = parseInt(rangeToInput.value) || selectedCovers.length;
-        
-        // Filtere Cover nach Range (Array ist 0-basiert, User-Input ist 1-basiert)
-        const coversToProcess = selectedCovers.slice(rangeFrom - 1, rangeTo);
-        
-        const lines = [];
-        
-        coversToProcess.forEach(cover => {
-            const volumeStr = cover.attributes.volume || 'unknown';
-            const vol = parseVolume(volumeStr);
-            
-            // Erstelle Cover-URL
+        const { from, to } = getRange();
+        const coversToProcess = selectedCovers.slice(from - 1, to);
+
+        const lines = coversToProcess.map(cover => {
+            const vol = parseVolume(cover.attributes.volume);
             const coverUrl = getCoverUrl(mangaId, cover.attributes.fileName);
-            
-            // Verwende die tatsächliche Volume-Nummer
             const volumeNumber = vol.main > 0 ? vol.main : 'unknown';
-            
-            // Format: Bandnummer|oc||Link
-            const line = `${volumeNumber}|oc||${coverUrl}`;
-            lines.push(line);
+            return `${volumeNumber}|oc||${coverUrl}`;
         });
-        
+
         const textToCopy = lines.join('\n');
-        
+        const originalText = copyLinksButton.textContent;
+
         try {
             await navigator.clipboard.writeText(textToCopy);
             log(`✓ ${lines.length} Links kopiert`);
             updateProgress(`✅ ${lines.length} Links in Zwischenablage kopiert!`);
-            
-            const originalText = copyLinksButton.textContent;
             copyLinksButton.textContent = '✅ Kopiert!';
-            
             setTimeout(() => {
                 copyLinksButton.textContent = originalText;
                 hideProgress();
             }, 2000);
         } catch (error) {
             log(`✗ Fehler beim Kopieren: ${error.message}`);
-            updateProgress(`❌ Kopieren fehlgeschlagen`);
-            
-            // Fallback: Zeige Text in Alert
-            alert('Links (kopiere manuell):\n\n' + textToCopy);
+            updateProgress('❌ Kopieren fehlgeschlagen – Links stehen im Log');
+            lines.forEach(l => log(l));
+            logDiv.classList.add('show-log');
         }
+    }
+
+    function getDirectoryPicker() {
+        const w = (typeof unsafeWindow !== 'undefined' && unsafeWindow) ? unsafeWindow : window;
+        return typeof w.showDirectoryPicker === 'function'
+            ? w.showDirectoryPicker.bind(w)
+            : null;
     }
 
     async function downloadToFolder() {
         if (isDownloading || selectedCovers.length === 0) return;
 
-        // Überprüfe ob File System Access API verfügbar ist
-        if (!window.showDirectoryPicker) {
-            alert('Ihr Browser unterstützt keine direkten Ordner-Downloads. Bitte verwenden Sie Chrome oder Edge.');
+        const showDirectoryPicker = getDirectoryPicker();
+        if (!showDirectoryPicker) {
+            alert('Ihr Browser unterstützt keine direkten Ordner-Downloads. Bitte Chrome oder Edge verwenden.');
             return;
         }
 
-        // Hole Range-Werte
-        const rangeFrom = parseInt(rangeFromInput.value) || 1;
-        const rangeTo = parseInt(rangeToInput.value) || selectedCovers.length;
-        
-        // Validiere Range
-        if (rangeFrom < 1 || rangeTo < rangeFrom || rangeTo > selectedCovers.length) {
-            alert(`Ungültiger Bereich! Bitte wählen Sie zwischen 1 und ${selectedCovers.length}.`);
+        const { from, to } = getRange();
+        if (from < 1 || to < from || to > selectedCovers.length) {
+            alert(`Ungültiger Bereich! Bitte zwischen 1 und ${selectedCovers.length} wählen.`);
             return;
         }
 
-        // Filtere Cover nach Range (Array ist 0-basiert, User-Input ist 1-basiert)
-        const coversToDownload = selectedCovers.slice(rangeFrom - 1, rangeTo);
-        
-        log(`Lade Cover ${rangeFrom} bis ${rangeTo} (${coversToDownload.length} Cover)`);
+        const coversToDownload = selectedCovers.slice(from - 1, to);
+        log(`Lade Cover ${from} bis ${to} (${coversToDownload.length} Stück)`);
 
         isDownloading = true;
         const originalText = startButton.textContent;
@@ -851,24 +809,18 @@
         startButton.textContent = '📁 Ordner wählen...';
 
         try {
-            // Lasse Nutzer Ordner auswählen
-            const directoryHandle = await window.showDirectoryPicker();
+            // Direkt im Klick-Handler aufrufen – braucht eine User-Geste
+            const directoryHandle = await showDirectoryPicker();
 
-            // Erstelle Serienordner mit Windows-kompatiblem Namen
             const sanitizedSeriesName = sanitizeFilename(seriesTitle);
             const seriesFolderHandle = await directoryHandle.getDirectoryHandle(sanitizedSeriesName, { create: true });
-
-            log(`Lade ${coversToDownload.length} Cover in Ordner: ${sanitizedSeriesName}`);
+            log(`Zielordner: ${sanitizedSeriesName}`);
 
             let successCount = 0;
 
-            // Lade alle Bilder herunter
             for (let i = 0; i < coversToDownload.length; i++) {
                 const cover = coversToDownload[i];
                 const volumeStr = cover.attributes.volume || 'unknown';
-                
-                // Debug-Logging
-                log(`Cover ${i + 1}: volumeStr="${volumeStr}", type=${typeof volumeStr}`);
 
                 try {
                     updateProgress(`📁 Lade ${i + 1}/${coversToDownload.length}: Band ${volumeStr}`);
@@ -877,24 +829,13 @@
                     const coverUrl = getCoverUrl(mangaId, cover.attributes.fileName);
                     const imageBlob = await downloadCover(coverUrl);
 
-                    // Bestimme Dateinamen - verwende die tatsächliche Volume-Nummer
-                    const extension = cover.attributes.fileName.split('.').pop() || 'jpg';
+                    const extension = (cover.attributes.fileName.split('.').pop() || 'jpg').toLowerCase();
                     const vol = parseVolume(volumeStr);
-                    
-                    log(`Parsed volume: main=${vol.main}, sub=${vol.sub}`);
-                    
-                    // Verwende die tatsächliche Volume-Nummer aus MangaDex
-                    let fileName;
-                    if (vol.main === 0 || volumeStr === 'unknown') {
-                        // Wenn keine Volume-Nummer, verwende 'unknown' oder Index
-                        fileName = `unknown_${i + 1}.${extension}`;
-                        log(`⚠️ Keine Volume-Nummer, verwende: ${fileName}`);
-                    } else {
-                        // Verwende die echte Volume-Nummer
-                        fileName = `${vol.main}.${extension}`;
-                    }
 
-                    // Schreibe Datei in Serienordner
+                    const fileName = vol.main === 0
+                        ? `unknown_${i + 1}.${extension}`
+                        : `${vol.main}.${extension}`;
+
                     const fileHandle = await seriesFolderHandle.getFileHandle(fileName, { create: true });
                     const writable = await fileHandle.createWritable();
                     await writable.write(imageBlob);
@@ -902,139 +843,133 @@
 
                     successCount++;
                     log(`✓ Gespeichert: ${fileName} (Band ${volumeStr})`);
-
                 } catch (error) {
                     log(`✗ Fehler bei Band ${volumeStr}: ${error.message}`);
                 }
 
-                // Kurze Pause zwischen Downloads
-                await new Promise(resolve => setTimeout(resolve, 500));
+                await new Promise(r => setTimeout(r, 400));
             }
 
-            updateProgress(`✅ Download abgeschlossen! ${successCount}/${coversToDownload.length} Cover gespeichert in "${sanitizedSeriesName}"`);
+            updateProgress(`✅ Fertig! ${successCount}/${coversToDownload.length} Cover in "${sanitizedSeriesName}"`);
             startButton.textContent = '✅ Fertig!';
-
-            setTimeout(() => {
-                startButton.textContent = originalText;
-                startButton.disabled = false;
-            }, 3000);
-
         } catch (error) {
             if (error.name === 'AbortError') {
                 updateProgress('❌ Download abgebrochen');
                 startButton.textContent = '❌ Abgebrochen';
             } else {
-                console.error('Fehler beim Ordner-Download:', error);
+                console.error('[MangaDex Cover Downloader] Ordner-Download:', error);
                 updateProgress('❌ Download-Fehler: ' + error.message);
                 startButton.textContent = '❌ Fehler';
             }
-
+        } finally {
+            isDownloading = false;
             setTimeout(() => {
                 startButton.textContent = originalText;
                 startButton.disabled = false;
             }, 3000);
-        } finally {
-            isDownloading = false;
         }
     }
 
-    async function initialize() {
+    /* ------------------------------------------------------------------
+     * 10. Initialisierung & SPA-Handling
+     * ------------------------------------------------------------------ */
+
+    function resetUI() {
+        allCovers = [];
+        selectedCovers = [];
+        seriesTitle = '';
+        mangaId = '';
+        selectedVersion = null;
+        selectedLocale = null;
+
+        versionSelector.classList.remove('show-version-selector');
+        localeSelector.classList.remove('show-version-selector');
+        rangeSelector.classList.remove('show-range-selector');
+
+        startButton.style.display = 'none';
+        startButton.disabled = true;
+        copyLinksButton.style.display = 'none';
+        copyLinksButton.disabled = true;
+        toggleLogButton.style.display = 'none';
+        logDiv.classList.remove('show-log');
+        logDiv.replaceChildren();
+
+        resetAnalyzeButton();
+        hideProgress();
+    }
+
+    function initialize() {
         mangaId = getMangaId();
-        
+
         if (!mangaId) {
-            seriesInfoDiv.innerHTML = '❌ Keine Manga-Seite erkannt';
+            seriesInfoDiv.textContent = 'ℹ️ Keine Titel-Seite – öffne einen Manga.';
             analyzeButton.disabled = true;
             return;
         }
 
-        // Versuche Titel aus der Seite zu extrahieren
-        const titleElement = document.querySelector('.text-xl.font-bold') || 
-                            document.querySelector('h1');
-        if (titleElement) {
-            seriesTitle = titleElement.textContent.trim();
-        }
+        analyzeButton.disabled = false;
 
-        seriesInfoDiv.innerHTML = `
-            <strong>Manga erkannt</strong><br>
-            <small>ID: ${mangaId.substring(0, 8)}...</small>
-        `;
+        const titleElement = document.querySelector('.text-xl.font-bold') || document.querySelector('h1');
+        if (titleElement) seriesTitle = titleElement.textContent.trim();
 
-        log('MangaDex Cover Downloader bereit');
-        log(`Manga-ID: ${mangaId}`);
+        setSeriesInfo([
+            ['Manga erkannt', ''],
+            ['ID:', mangaId.substring(0, 8) + '…']
+        ]);
+
+        log('Bereit – Manga-ID: ' + mangaId);
     }
 
-    // Event Listeners
+    // Event Listener
     analyzeButton.addEventListener('click', analyzeCovers);
     startButton.addEventListener('click', downloadToFolder);
     copyLinksButton.addEventListener('click', copyLinksToClipboard);
 
+    confirmLocaleButton.addEventListener('click', () => {
+        const selected = localeOptions.querySelector('input[name="locale"]:checked');
+        if (!selected) return;
+        selectedLocale = selected.value;
+        log(`Sprache ausgewählt: ${selectedLocale}`);
+        continueAfterLocale();
+    });
+
+    confirmVersionButton.addEventListener('click', () => {
+        const selected = versionOptions.querySelector('input[name="version"]:checked');
+        if (!selected) return;
+        selectedVersion = parseInt(selected.value, 10);
+        selectedCovers = filterCovers(allCovers, selectedVersion, selectedLocale);
+        proceedToDownload();
+    });
+
     toggleLogButton.addEventListener('click', () => {
         logDiv.classList.toggle('show-log');
-        toggleLogButton.textContent = logDiv.classList.contains('show-log') ? 
-            '🔍 Details ausblenden' : '🔍 Details anzeigen';
+        toggleLogButton.textContent = logDiv.classList.contains('show-log')
+            ? '🔍 Details ausblenden'
+            : '🔍 Details anzeigen';
     });
 
-    // Initialisierung - mehrere Methoden für maximale Kompatibilität
-    function startInitialization() {
-        log('Starte Initialisierung...');
-        initialize();
-    }
-
-    // Methode 1: Sofort starten wenn DOM bereit ist
-    if (document.readyState === 'loading') {
-        document.addEventListener('DOMContentLoaded', startInitialization);
-    } else {
-        startInitialization();
-    }
-
-    // Methode 2: Zusätzlicher Fallback nach kurzer Verzögerung
-    setTimeout(startInitialization, 500);
-
-    // Methode 3: Window load event als weitere Absicherung
-    window.addEventListener('load', () => {
-        if (!mangaId) {
-            log('Window loaded - versuche erneut zu initialisieren');
-            startInitialization();
-        }
+    headerEl.addEventListener('click', () => {
+        ui.classList.toggle('mdcd-collapsed');
     });
 
-    // Beobachte URL-Änderungen für Single-Page-Application
+    // Erstes Einhängen
+    mount();
+    initialize();
+    log('MangaDex Cover Downloader geladen');
+
+    // Wächter: hängt das Panel neu ein, falls die SPA es entfernt,
+    // und erkennt Navigationswechsel ohne teuren MutationObserver.
     let lastUrl = location.href;
-    new MutationObserver(() => {
-        const currentUrl = location.href;
-        if (currentUrl !== lastUrl) {
-            lastUrl = currentUrl;
-            log('URL geändert, re-initialisiere...');
-            
-            // Reset UI
-            allCovers = [];
-            selectedCovers = [];
-            seriesTitle = '';
-            mangaId = '';
-            selectedVersion = null;
-            selectedLocale = null;
-            
-            versionSelector.classList.remove('show-version-selector');
-            localeSelector.classList.remove('show-version-selector');
-            rangeSelector.classList.remove('show-range-selector');
-            startButton.style.display = 'none';
-            startButton.disabled = true;
-            copyLinksButton.style.display = 'none';
-            copyLinksButton.disabled = true;
-            analyzeButton.style.display = 'block';
-            analyzeButton.disabled = false;
-            analyzeButton.textContent = '🔍 Cover analysieren';
-            logDiv.innerHTML = '';
-            hideProgress();
-            
-            // Re-initialisiere
-            if (document.readyState === 'loading') {
-                document.addEventListener('DOMContentLoaded', initialize);
-            } else {
-                setTimeout(initialize, 300);
-            }
+    setInterval(() => {
+        if (mount()) {
+            log('UI wurde entfernt – neu eingehängt');
         }
-    }).observe(document, { subtree: true, childList: true });
 
-    log('MangaDex Cover Downloader geladen - beobachtet URL-Änderungen');
+        if (location.href !== lastUrl) {
+            lastUrl = location.href;
+            if (isAnalyzing || isDownloading) return;
+            resetUI();
+            setTimeout(initialize, 300);
+        }
+    }, 750);
 })();
