@@ -11,6 +11,8 @@
 // @run-at       document-idle
 // @grant        GM_addStyle
 // @grant        unsafeWindow
+// @updateURL    https://github.com/Ninelpienel/manga_cover/raw/refs/heads/main/mangadex_cover_downloader.user.js
+// @downloadURL  https://github.com/Ninelpienel/manga_cover/raw/refs/heads/main/mangadex_cover_downloader.user.js
 // ==/UserScript==
 
 (function () {
