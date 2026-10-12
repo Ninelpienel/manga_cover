@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Manga Passion Cover Downloader
 // @namespace    http://tampermonkey.net/
-// @version      3.1
-// @description  Download high-resolution covers from Manga-Passion.de
+// @version      3.2
+// @description  Download high-resolution covers from Manga-Passion.de (Edition-Seiten und Release-Listen mit ISBN-Benennung)
 // @author       You
 // @match        https://www.manga-passion.de/*
 // @grant        none
@@ -230,10 +230,10 @@
     ui.innerHTML = `
         <h3>📚 Manga-Passion Cover Downloader</h3>
         <div class="mp-series-info" id="series-info">Bereit zum Analysieren...</div>
-        <button id="copy-all-info" class="analyze-button">📋 Alle Infos kopieren</button>
-        <button id="copy-tags" class="analyze-button">🏷️ Tags kopieren</button>
-        <button id="search-mangadex" style="background: linear-gradient(135deg, #ff6740 0%, #ff8360 100%); box-shadow: 0 4px 12px rgba(255, 103, 64, 0.3);">🔍 MangaDex suchen</button>
-        <button id="search-mangaupdates" style="background: linear-gradient(135deg, #7c3aed 0%, #9333ea 100%); box-shadow: 0 4px 12px rgba(124, 58, 237, 0.3);">📖 MangaUpdates suchen</button>
+        <button id="copy-all-info" class="analyze-button edition-only">📋 Alle Infos kopieren</button>
+        <button id="copy-tags" class="analyze-button edition-only">🏷️ Tags kopieren</button>
+        <button id="search-mangadex" class="edition-only" style="background: linear-gradient(135deg, #ff6740 0%, #ff8360 100%); box-shadow: 0 4px 12px rgba(255, 103, 64, 0.3);">🔍 MangaDex suchen</button>
+        <button id="search-mangaupdates" class="edition-only" style="background: linear-gradient(135deg, #7c3aed 0%, #9333ea 100%); box-shadow: 0 4px 12px rgba(124, 58, 237, 0.3);">📖 MangaUpdates suchen</button>
         <button id="analyze-covers" class="analyze-button">🔍 Cover analysieren</button>
         <div class="range-selector" id="range-selector">
             <h4>Cover-Bereich auswählen:</h4>
@@ -273,6 +273,11 @@
     let allCovers = [];
     let seriesTitle = '';
     let editionId = '';
+    let pageType = '';
+
+    const API_BASE = 'https://api.manga-passion.de';
+    const MONTH_NAMES = ['Januar', 'Februar', 'März', 'April', 'Mai', 'Juni',
+                         'Juli', 'August', 'September', 'Oktober', 'November', 'Dezember'];
 
     function log(message) {
         console.log('[Manga-Passion Cover Downloader]', message);
@@ -287,6 +292,16 @@
 
     function hideProgress() {
         progressDiv.classList.remove('show-progress');
+    }
+
+    // Bestimme Seitentyp
+    function detectPageType() {
+        if (/\/editions\/\d+/.test(window.location.pathname)) {
+            return 'edition';
+        } else if (/^\/manga\/?$/.test(window.location.pathname)) {
+            return 'releases';
+        }
+        return 'unknown';
     }
 
     // Extrahiere Edition-ID aus URL
@@ -855,7 +870,148 @@
         });
     }
 
+    // Sammle Volume-IDs aller aktuell angezeigten Bände der Release-Liste
+    function getReleaseVolumeIds() {
+        const container = document.querySelector('[class*="releases-page_main"]') || document;
+        const ids = [];
+        container.querySelectorAll('a[href*="/volumes/"]').forEach(link => {
+            const match = link.getAttribute('href').match(/\/volumes\/(\d+)/);
+            if (match && !ids.includes(match[1])) {
+                ids.push(match[1]);
+            }
+        });
+        return ids;
+    }
+
+    async function fetchVolume(volumeId) {
+        const response = await fetch(`${API_BASE}/volumes/${volumeId}`, {
+            headers: { 'Accept': 'application/json' }
+        });
+        if (!response.ok) {
+            throw new Error(`HTTP ${response.status}`);
+        }
+        return await response.json();
+    }
+
+    // Ordnername aus URL-Filtern, z.B. "Manga Cult Oktober 2026"
+    function getReleaseCollectionName(volumes) {
+        const params = new URLSearchParams(window.location.search);
+        const publisherId = params.get('publisher');
+        const month = parseInt(params.get('month'));
+        const year = params.get('year');
+
+        let publisherName = 'Manga-Passion';
+        if (publisherId) {
+            for (const volume of volumes) {
+                const publishers = (volume.edition && volume.edition.publishers) || [];
+                const publisher = publishers.find(p => String(p.id) === publisherId);
+                if (publisher) {
+                    publisherName = publisher.name;
+                    break;
+                }
+            }
+        }
+
+        const parts = [publisherName];
+        if (month >= 1 && month <= 12) parts.push(MONTH_NAMES[month - 1]);
+        if (year) parts.push(year);
+        if (parts.length === 1) parts.push('Releases');
+        return parts.join(' ');
+    }
+
+    async function analyzeReleaseCovers() {
+        if (isAnalyzing) return;
+
+        isAnalyzing = true;
+        allCovers = [];
+
+        analyzeButton.disabled = true;
+        toggleLogButton.style.display = 'block';
+        logDiv.innerHTML = '';
+
+        const volumeIds = getReleaseVolumeIds();
+        log(`Gefunden: ${volumeIds.length} Bände auf der Seite`);
+
+        if (volumeIds.length === 0) {
+            updateProgress('❌ Keine Bände gefunden');
+            analyzeButton.disabled = false;
+            analyzeButton.textContent = '🔍 Cover analysieren';
+            isAnalyzing = false;
+            return;
+        }
+
+        const volumes = [];
+        for (let i = 0; i < volumeIds.length; i++) {
+            analyzeButton.textContent = `🔍 Lade ${i + 1}/${volumeIds.length}...`;
+            updateProgress(`🔍 Lade Band-Infos ${i + 1}/${volumeIds.length}`);
+
+            try {
+                const volume = await fetchVolume(volumeIds[i]);
+                volumes.push(volume);
+
+                const editionTitle = (volume.edition && volume.edition.title) || 'Unbekannt';
+                const volumeLabel = volume.numberDisplay || volume.number || '?';
+                if (!volume.cover) {
+                    log(`✗ Kein Cover: ${editionTitle} ${volumeLabel}`);
+                    continue;
+                }
+
+                const isbn = (volume.isbn13 || volume.isbn10 || '').replace(/[^0-9X]/gi, '');
+                allCovers.push({
+                    src: volume.cover,
+                    alt: `${editionTitle} ${volumeLabel}`,
+                    volumeNumber: Number.isInteger(volume.number) ? volume.number : 0,
+                    isbn: isbn,
+                    editionTitle: editionTitle
+                });
+                log(`✓ ${editionTitle} ${volumeLabel} (ISBN: ${isbn || 'nicht gefunden'})`);
+            } catch (error) {
+                log(`✗ Fehler bei Volume ${volumeIds[i]}: ${error.message}`);
+            }
+
+            // Kurze Pause zwischen API-Anfragen
+            await new Promise(resolve => setTimeout(resolve, 150));
+        }
+
+        seriesTitle = getReleaseCollectionName(volumes);
+
+        if (allCovers.length === 0) {
+            updateProgress('❌ Keine Cover gefunden');
+            analyzeButton.disabled = false;
+            analyzeButton.textContent = '🔍 Cover analysieren';
+            isAnalyzing = false;
+            return;
+        }
+
+        updateProgress(`✅ ${allCovers.length}/${volumeIds.length} Cover bereit zum Download`);
+
+        seriesInfoDiv.innerHTML = `
+            <strong>Sammlung:</strong> ${seriesTitle}<br>
+            <strong>Cover:</strong> ${allCovers.length} gefunden
+        `;
+
+        // Zeige Range-Selector
+        rangeSelector.style.display = 'block';
+        rangeFromInput.value = 1;
+        rangeToInput.value = allCovers.length;
+        rangeToInput.max = allCovers.length;
+        rangeFromInput.max = allCovers.length;
+
+        startButton.style.display = 'block';
+        startButton.disabled = false;
+        startButton.textContent = `📁 Cover herunterladen`;
+
+        copyLinksButton.style.display = 'block';
+        copyLinksButton.disabled = false;
+        copyLinksButton.textContent = `📋 ${allCovers.length} Links kopieren`;
+
+        analyzeButton.textContent = '🔄 Neu analysieren';
+        analyzeButton.disabled = false;
+        isAnalyzing = false;
+    }
+
     async function analyzeCovers() {
+        if (pageType === 'releases') return analyzeReleaseCovers();
         if (isAnalyzing) return;
 
         isAnalyzing = true;
@@ -1058,8 +1214,15 @@
                         }
                     }
 
-                    // Erstelle einfachen nummerierten Dateinamen
-                    const fileName = `${cover.volumeNumber}.${extension}`;
+                    // Release-Liste: 000_ISBN.ext, Edition-Seite: einfacher nummerierter Dateiname
+                    let fileName;
+                    if (pageType === 'releases') {
+                        const paddedNumber = String(cover.volumeNumber).padStart(3, '0');
+                        const suffix = cover.isbn || sanitizeFilename(cover.editionTitle);
+                        fileName = `${paddedNumber}_${suffix}.${extension}`;
+                    } else {
+                        fileName = `${cover.volumeNumber}.${extension}`;
+                    }
 
                     // Schreibe Datei in Serienordner
                     const fileHandle = await seriesFolderHandle.getFileHandle(fileName, { create: true });
@@ -1106,6 +1269,23 @@
     }
 
     async function initialize() {
+        pageType = detectPageType();
+
+        // Serien-spezifische Buttons nur auf Edition-Seiten
+        document.querySelectorAll('#mp-downloader .edition-only').forEach(button => {
+            button.style.display = pageType === 'edition' ? '' : 'none';
+        });
+
+        if (pageType === 'releases') {
+            analyzeButton.disabled = false;
+            seriesInfoDiv.innerHTML = `
+                <strong>Release-Liste erkannt</strong><br>
+                <small>${getReleaseVolumeIds().length} Bände angezeigt</small>
+            `;
+            log('Manga-Passion Cover Downloader bereit (Release-Liste)');
+            return;
+        }
+
         editionId = getEditionId();
         
         if (!editionId) {
@@ -1168,6 +1348,9 @@
             
             startButton.style.display = 'none';
             startButton.disabled = true;
+            copyLinksButton.style.display = 'none';
+            copyLinksButton.disabled = true;
+            rangeSelector.style.display = 'none';
             analyzeButton.disabled = false;
             analyzeButton.textContent = '🔍 Cover analysieren';
             logDiv.innerHTML = '';
