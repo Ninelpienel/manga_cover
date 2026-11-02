@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MangaDex Cover Downloader
 // @namespace    http://tampermonkey.net/
-// @version      1.4
+// @version      1.5
 // @description  Download high-resolution covers from MangaDex with automatic version detection
 // @author       You
 // @match        https://mangadex.org/*
@@ -10,9 +10,8 @@
 // @connect      uploads.mangadex.org
 // @run-at       document-idle
 // @grant        GM_addStyle
+// @grant        GM_xmlhttpRequest
 // @grant        unsafeWindow
-// @updateURL    https://github.com/Ninelpienel/manga_cover/raw/refs/heads/main/mangadex_cover_downloader.user.js
-// @downloadURL  https://github.com/Ninelpienel/manga_cover/raw/refs/heads/main/mangadex_cover_downloader.user.js
 // ==/UserScript==
 
 (function () {
@@ -49,6 +48,38 @@
             const doc = new DOMParser().parseFromString(`<body>${str}</body>`, 'text/html');
             const nodes = Array.from(doc.body.childNodes).map(n => document.importNode(n, true));
             el.replaceChildren(...nodes);
+        }
+    }
+
+    // Requests über Tampermonkey: kein CORS, Browser-Cookies (z. B. bestandene
+    // Bot-Challenge auf api.mangadex.org) werden mitgeschickt. Ein normales
+    // fetch() von mangadex.org aus schickt diese Cookies nicht mit.
+    function gmRequest(url, responseType = 'text') {
+        return new Promise((resolve, reject) => {
+            GM_xmlhttpRequest({
+                method: 'GET',
+                url,
+                responseType,
+                anonymous: false,
+                timeout: 30000,
+                onload: r => resolve(r),
+                onerror: () => reject(new Error('Netzwerkfehler')),
+                ontimeout: () => reject(new Error('Timeout'))
+            });
+        });
+    }
+
+    async function apiGet(url) {
+        const r = await gmRequest(url);
+        if (r.status === 429) return { status: 429, data: null };
+        const text = r.responseText || '';
+        try {
+            return { status: r.status, data: JSON.parse(text) };
+        } catch (e) {
+            if (/bot challenge/i.test(text)) {
+                throw new Error('Bot-Challenge – öffne https://api.mangadex.org/ping einmal im Tab, dann neu analysieren');
+            }
+            throw new Error(`Keine JSON-Antwort (HTTP ${r.status}): ${text.slice(0, 60)}`);
         }
     }
 
@@ -389,7 +420,6 @@
     }
 
     function setSeriesInfo(lines) {
-        progressDiv.dataset.dummy = '';
         seriesInfoDiv.replaceChildren();
         lines.forEach((parts, i) => {
             if (i > 0) seriesInfoDiv.appendChild(document.createElement('br'));
@@ -411,9 +441,8 @@
 
     async function getMangaInfo() {
         try {
-            const response = await fetch(`https://api.mangadex.org/manga/${mangaId}`);
-            const data = await response.json();
-            if (data.result === 'ok') {
+            const { data } = await apiGet(`https://api.mangadex.org/manga/${mangaId}`);
+            if (data && data.result === 'ok') {
                 const t = data.data.attributes.title;
                 const title = t.en || t['ja-ro'] || Object.values(t)[0] || 'Unknown';
                 return { title };
@@ -431,18 +460,18 @@
             const limit = 100;
 
             while (true) {
-                const response = await fetch(
+                const res = await apiGet(
                     `https://api.mangadex.org/cover?manga[]=${mangaId}&limit=${limit}&offset=${offset}&order[volume]=asc`
                 );
 
-                if (response.status === 429) {
+                if (res.status === 429) {
                     log('⏳ Rate-Limit erreicht, warte 5 Sekunden...');
                     await new Promise(r => setTimeout(r, 5000));
                     continue;
                 }
 
-                const data = await response.json();
-                if (data.result !== 'ok') break;
+                const data = res.data;
+                if (!data || data.result !== 'ok') break;
 
                 log(`API lieferte ${data.data.length} Cover (offset ${offset})`);
 
@@ -633,6 +662,7 @@
 
             if (allCovers.length === 0) {
                 updateProgress('❌ Keine Cover gefunden');
+                logDiv.classList.add('show-log');
                 resetAnalyzeButton();
                 return;
             }
@@ -742,9 +772,14 @@
     }
 
     async function downloadCover(coverUrl) {
-        const response = await fetch(coverUrl);
-        if (!response.ok) throw new Error(`HTTP ${response.status}`);
-        return await response.blob();
+        const r = await gmRequest(coverUrl, 'blob');
+        if (r.status < 200 || r.status >= 300) throw new Error(`HTTP ${r.status}`);
+        const blob = r.response;
+        if (!blob || !blob.size) throw new Error('Leere Antwort');
+        if (blob.type && !blob.type.startsWith('image/')) {
+            throw new Error(`Kein Bild (${blob.type}) – evtl. Bot-Challenge, https://uploads.mangadex.org einmal im Tab öffnen`);
+        }
+        return blob;
     }
 
     async function copyLinksToClipboard() {
